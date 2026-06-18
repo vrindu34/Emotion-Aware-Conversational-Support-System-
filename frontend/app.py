@@ -1,28 +1,27 @@
 """
-app.py  –  Streamlit Frontend (Redesigned)
-──────────────────────────────────────────
-Chat-based interface for the Emotion-Aware Support System.
-
-Features:
-  • Conversational chat UI with styled message bubbles
-  • Emotion intensity bar chart (Plotly)
-  • Spotify track suggestions with links
-  • Wellness action suggestions
-  • Emotion trend line over session
-  • Fuzzy rule explainability toggle
-  • Session management
+app.py  Streamlit Frontend (Standalone, no FastAPI needed)
+Directly imports backend modules for Streamlit Cloud deployment.
 """
 
 from __future__ import annotations
 
+import sys
+import os
 import uuid
+import random
 from typing import Any, Dict, List, Optional
 
+# ── Path setup so backend imports work ──────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import plotly.graph_objects as go
-import requests
 import streamlit as st
 
-API_BASE = "http://localhost:8000/api"
+# ── Direct backend imports (no FastAPI needed) ──────────────────
+from backend.engines.anfis_engine import get_engine, FUZZY_RULES
+from backend.engines.response_engine import get_response_engine
+from backend.modules.emotion_memory import get_memory
+from backend.modules.suggestion_engine import get_suggestion_engine
 
 # ──────────────────────────────────────────────────────────────
 # Page configuration
@@ -89,14 +88,6 @@ st.markdown("""
     background: #fff8e1; border: 1px solid #ffc107; border-radius: 8px;
     padding: 10px 14px; font-size: 13px; font-family: sans-serif; color: #5f4300; margin: 8px 0;
   }
-  .track-card {
-    background: #fafaf8; border: 1px solid #e8e4df; border-radius: 8px;
-    padding: 8px 12px; margin: 4px 0; font-family: sans-serif; font-size: 13px;
-  }
-  .spotify-link { color: #1DB954 !important; font-weight: 600; text-decoration: none; }
-  .wellness-tip { font-size: 13px; font-family: sans-serif; color: #444; padding: 3px 0; }
-  .tip-dot { color: #6aaa82; font-weight: 700; }
-  .section-divider { border: none; border-top: 1px solid #ece8e2; margin: 1rem 0; }
   .empty-state { text-align: center; margin-top: 5rem; color: #999; font-family: sans-serif; }
 
   .stTextArea textarea {
@@ -133,47 +124,95 @@ init_state()
 
 
 # ──────────────────────────────────────────────────────────────
-# API helpers
+# Core inference (replaces API call)
 # ──────────────────────────────────────────────────────────────
 
-def call_chat(text: str, include_explanation: bool = False, include_spotify: bool = True) -> Optional[Dict[str, Any]]:
+def _emotion_level(score: float) -> str:
+    if score >= 0.65:
+        return "high"
+    if score >= 0.35:
+        return "medium"
+    return "low"
+
+
+def process_message(text: str, include_explanation: bool = False) -> Optional[Dict[str, Any]]:
     try:
-        resp = requests.post(
-            f"{API_BASE}/chat",
-            json={
-                "text": text,
-                "session_id": st.session_state.session_id,
-                "include_spotify": include_spotify,
-                "include_suggestions": True,
-                "include_explanation": include_explanation,
-            },
-            timeout=15,
+        session_id = st.session_state.session_id
+        memory = get_memory()
+        history = memory.get_history(session_id)
+
+        # ANFIS inference
+        engine = get_engine()
+        result = engine.infer(text)
+
+        # Trend note
+        trend = memory.get_trend_report(session_id)
+        trend_note = trend.context_note or None
+
+        # Response
+        response_engine = get_response_engine()
+        response_text = response_engine.generate(result, user_text=text, conversation_history=history)
+
+        # Wellness suggestions
+        suggestion_eng = get_suggestion_engine()
+        sugg = suggestion_eng.get_suggestions(result)
+        wellness_data = sugg.get("wellness_actions")
+        crisis_note = sugg.get("crisis_note")
+
+        # Record memory
+        memory.record(
+            session_id=session_id,
+            user_text=text,
+            emotion_scores=result.emotion_scores,
+            dominant_emotion=result.dominant_emotion,
+            dominant_score=result.dominant_score,
+            response_label=result.response_label,
+            severity=result.severity,
         )
-        if resp.status_code == 200:
-            return resp.json()
-        st.error(f"API error {resp.status_code}: {resp.text}")
-        return None
-    except requests.exceptions.ConnectionError:
-        st.error(
-            "⚠️ Cannot connect to backend. Start it first:\n\n"
-            "```\ncd emotion_support\nuvicorn backend.main:app --reload --port 8000\n```"
+
+        # Build emotions list
+        emotions = sorted(
+            [{"emotion": em, "score": round(sc, 3), "level": _emotion_level(sc)}
+             for em, sc in result.emotion_scores.items()],
+            key=lambda x: -x["score"]
         )
-        return None
+
+        # Explanation
+        explanation = None
+        fired_rules_out = None
+        if include_explanation:
+            explanation = result.explanation
+            fired_rules_out = [
+                {
+                    "rule_id": rid,
+                    "strength": round(strength, 4),
+                    "description": next((r.description for r in FUZZY_RULES if r.rule_id == rid), ""),
+                }
+                for rid, strength in result.fired_rules
+            ]
+
+        return {
+            "session_id": session_id,
+            "response": response_text,
+            "emotions": emotions,
+            "dominant_emotion": result.dominant_emotion,
+            "dominant_score": round(result.dominant_score, 3),
+            "severity": result.severity,
+            "response_label": result.response_label,
+            "wellness_suggestions": wellness_data,
+            "crisis_note": crisis_note,
+            "explanation": explanation,
+            "trend_note": trend_note,
+            "fired_rules": fired_rules_out,
+        }
+
     except Exception as e:
-        st.error(f"Unexpected error: {e}")
-        return None
-
-
-def call_trends() -> Optional[Dict]:
-    try:
-        resp = requests.get(f"{API_BASE}/trends/{st.session_state.session_id}", timeout=5)
-        return resp.json() if resp.status_code == 200 else None
-    except Exception:
+        st.error(f"Error processing message: {e}")
         return None
 
 
 # ──────────────────────────────────────────────────────────────
-# Emotion colors
+# Emotion colors & charts
 # ──────────────────────────────────────────────────────────────
 
 EMOTION_COLORS = {
@@ -182,10 +221,6 @@ EMOTION_COLORS = {
     "surprise": "#0097a7", "neutral": "#888888",
 }
 
-
-# ──────────────────────────────────────────────────────────────
-# Charts
-# ──────────────────────────────────────────────────────────────
 
 def render_emotion_bars(emotions: List[Dict]) -> None:
     if not emotions:
@@ -245,7 +280,6 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=True):
         show_explanation = st.toggle("Fuzzy rule explanation", value=False)
-        show_spotify     = st.toggle("Music suggestions", value=True)
         show_wellness    = st.toggle("Wellness tips", value=True)
 
     st.markdown("---")
@@ -259,22 +293,14 @@ with st.sidebar:
             st.session_state.pop(key, None)
         st.rerun()
 
-    trends = call_trends()
-    if trends and trends.get("context_note"):
-        st.info(f"💡 {trends['context_note']}")
-
 
 # ──────────────────────────────────────────────────────────────
-# Main — Header
+# Main
 # ──────────────────────────────────────────────────────────────
 
 st.markdown("## Emotion-Aware Conversational Support")
 st.caption("Talk about how you're feeling. The system detects emotions and responds with empathy.")
 st.markdown("---")
-
-# ──────────────────────────────────────────────────────────────
-# Chat history
-# ──────────────────────────────────────────────────────────────
 
 if not st.session_state.messages:
     st.markdown("""
@@ -301,10 +327,7 @@ for msg in st.session_state.messages:
             unsafe_allow_html=True,
         )
 
-# ──────────────────────────────────────────────────────────────
-# Emotion panel
-# ──────────────────────────────────────────────────────────────
-
+# ── Emotion panel ──────────────────────────────────────────────
 if st.session_state.last_result:
     result = st.session_state.last_result
     st.markdown("---")
@@ -328,7 +351,6 @@ if st.session_state.last_result:
         if result.get("trend_note"):
             st.info(result["trend_note"])
 
-    # Wellness tips — full width row so they always show
     if show_wellness and result.get("wellness_suggestions"):
         st.markdown('<p class="panel-label" style="margin-top:1rem">💡 Wellness Tips</p>', unsafe_allow_html=True)
         tips = result["wellness_suggestions"]
@@ -350,31 +372,6 @@ if st.session_state.last_result:
             unsafe_allow_html=True,
         )
 
-    if show_spotify and result.get("spotify"):
-        spotify = result["spotify"]
-        st.markdown("---")
-        st.markdown('<p class="panel-label">🎵 Music Suggestions</p>', unsafe_allow_html=True)
-        st.caption(spotify.get("message", ""))
-        if spotify.get("source") == "fallback_playlist":
-            st.caption("_Using curated playlists — add Spotify credentials in `.env` for live recommendations_")
-
-        tracks = spotify.get("tracks", [])
-        if tracks:
-            cols = st.columns(min(len(tracks), 3))
-            for i, track in enumerate(tracks[:3]):
-                with cols[i]:
-                    name   = track.get("name", "Unknown")
-                    artist = track.get("artist", "")
-                    url    = track.get("spotify_url", "#")
-                    st.markdown(
-                        f'<div class="track-card">'
-                        f'🎧 <b>{name}</b><br>'
-                        f'<span style="color:#888;font-size:12px">{artist}</span><br>'
-                        f'<a class="spotify-link" href="{url}" target="_blank">▶ Open in Spotify</a>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
     if show_explanation and result.get("explanation"):
         with st.expander("🔍 Fuzzy Rule Explanation"):
             st.code(result["explanation"], language="text")
@@ -384,11 +381,7 @@ if st.session_state.last_result:
                         f"**{rule['rule_id']}** (strength: `{rule['strength']:.4f}`): {rule['description']}"
                     )
 
-
-# ──────────────────────────────────────────────────────────────
-# Input
-# ──────────────────────────────────────────────────────────────
-
+# ── Input ──────────────────────────────────────────────────────
 st.markdown("---")
 with st.form("chat_form", clear_on_submit=True):
     user_input = st.text_area(
@@ -405,14 +398,13 @@ st.caption("Press Send to submit.")
 
 if submitted and user_input.strip():
     with st.spinner("Processing…"):
-        result = call_chat(
+        result = process_message(
             text=user_input.strip(),
             include_explanation=show_explanation,
-            include_spotify=show_spotify,
         )
     if result:
-        st.session_state.messages.append({"role": "user",  "content": user_input.strip()})
-        st.session_state.messages.append({"role": "bot",   "content": result["response"]})
+        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
+        st.session_state.messages.append({"role": "bot",  "content": result["response"]})
         st.session_state.last_result = result
         st.session_state.emotion_history.append({
             "dominant": result.get("dominant_emotion"),
