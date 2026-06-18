@@ -1,9 +1,10 @@
-fastapi==0.110.0
-uvicorn==0.29.0
-pydantic==2.6.4
-numpy==2.0.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.7.0
+numpy>=2.0.0
 scikit-learn>=1.5.0
 streamlit>=1.32.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+plotly>=5.0.0
 spotipy>=2.23.0
