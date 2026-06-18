@@ -18,10 +18,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Direct backend imports (no FastAPI needed) ──────────────────
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from backend.engines.anfis_engine import get_engine, FUZZY_RULES
 from backend.engines.response_engine import get_response_engine
-from backend.modules.emotion_memory import get_memory
-from backend.modules.suggestion_engine import get_suggestion_engine
+from backend.modules.memory import get_memory
+from backend.modules.suggestions import get_suggestion_engine
 
 # ──────────────────────────────────────────────────────────────
 # Page configuration
