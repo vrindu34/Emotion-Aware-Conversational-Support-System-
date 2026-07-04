@@ -1,7 +1,8 @@
 # Emotion-Aware Conversational Support System
 ### Neuro-Fuzzy Inference · Adaptive Responses · Spotify Integration
 
----
+**Author:** Vrinda Gupta  
+**Usage Notice:** This repository is shared publicly for portfolio, research, and evaluation purposes only. Reuse, redistribution, modification, or submission of this work as one’s own without explicit permission from the author is not allowed.
 
 ## Overview
 
